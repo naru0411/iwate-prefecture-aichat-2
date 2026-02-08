@@ -1,0 +1,9 @@
+llama-cpp-python
+streamlit
+sentence-transformers
+beautifulsoup4
+markdownify
+requests
+scikit-learn
+huggingface_hub
+numpy
