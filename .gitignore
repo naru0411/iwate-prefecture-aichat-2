@@ -1,0 +1,25 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Models and Large Data
+models/
+*.gguf
+*.bin
+*.pkl
+*.npy
+
+# Application Data
+storage/
+chat_history.json
+*.log
+
+# Sensitive Files
+.env

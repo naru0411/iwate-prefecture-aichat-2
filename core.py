@@ -4,6 +4,7 @@ import time
 import requests
 import numpy as np
 import urllib3
+import pickle
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from markdownify import markdownify as md
@@ -23,6 +24,12 @@ MODEL_REPO = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
 MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 
+# ストレージ設定
+STORAGE_DIR = "storage"
+DOCS_FILE = os.path.join(STORAGE_DIR, "documents.pkl")
+META_FILE = os.path.join(STORAGE_DIR, "metadatas.pkl")
+EMBED_FILE = os.path.join(STORAGE_DIR, "embeddings.npy")
+
 # ==========================================
 # 2. クラス定義: RAG エンジン
 # ==========================================
@@ -37,8 +44,14 @@ class RAGEngine:
         
     def _load_llm(self):
         """Llamaモデルをロード"""
-        print(f"モデル {MODEL_REPO} をダウンロード中...")
-        model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE)
+        # ローカルディレクトリ ./models に保存
+        print(f"モデル {MODEL_REPO} をダウンロード/ロード中...")
+        model_path = hf_hub_download(
+            repo_id=MODEL_REPO,
+            filename=MODEL_FILE,
+            local_dir="./models",
+            local_dir_use_symlinks=False
+        )
         print(f"モデルロード: {model_path}")
         # n_gpu_layers=-1 で可能な限りGPU使用, n_ctx=2048
         return Llama(
@@ -53,8 +66,45 @@ class RAGEngine:
         print(f"Embeddingモデル {EMBEDDING_MODEL_NAME} をロード中 (CPU)...")
         return SentenceTransformer(EMBEDDING_MODEL_NAME, device="cpu")
 
-    def fetch_data(self, base_url: str="https://www.iwate-pu.ac.jp/", max_pages: int=20):
-        """大学サイトからデータを収集 (デフォルト20ページ制限)"""
+    def _save_data(self):
+        """データをストレージに保存"""
+        if not os.path.exists(STORAGE_DIR):
+            os.makedirs(STORAGE_DIR)
+        
+        try:
+            with open(DOCS_FILE, 'wb') as f:
+                pickle.dump(self.documents, f)
+            with open(META_FILE, 'wb') as f:
+                pickle.dump(self.metadatas, f)
+            np.save(EMBED_FILE, self.document_embeddings)
+            print("データをlocal storageに保存しました。")
+        except Exception as e:
+            print(f"保存エラー: {e}")
+
+    def _load_data(self):
+        """ストレージからデータを読み込み"""
+        if os.path.exists(DOCS_FILE) and os.path.exists(META_FILE) and os.path.exists(EMBED_FILE):
+            print("保存済みデータが見つかりました。読み込んでいます...")
+            try:
+                with open(DOCS_FILE, 'rb') as f:
+                    self.documents = pickle.load(f)
+                with open(META_FILE, 'rb') as f:
+                    self.metadatas = pickle.load(f)
+                self.document_embeddings = np.load(EMBED_FILE)
+                print("データの読み込み完了。スクレイピングをスキップします。")
+                return True
+            except Exception as e:
+                print(f"読み込みエラー: {e}")
+                return False
+        return False
+
+    def fetch_data(self, base_url: str="https://www.iwate-pu.ac.jp/", max_pages: int=133):
+        """大学サイトからデータを収集 (保存済みならスキップ)"""
+
+        # 既存データの読み込み試行
+        if self._load_data():
+            return
+            
         print(f"データ収集中 (最大 {max_pages} ページ)...")
         results = []
         visited_urls = set()
@@ -134,6 +184,7 @@ class RAGEngine:
         
         print(f"データ収集完了: {len(results)} ページ")
         self._process_documents(results)
+        self._save_data() # Save after processing
 
     def _process_documents(self, raw_data, chunk_size=500):
         """データをチャンク化してベクトル化"""
@@ -147,10 +198,6 @@ class RAGEngine:
             content = item["content"]
             
             # 簡易的なチャンク分割 (文字数ベースで近似)
-            # Llamaのトークナイザーを使うと正確だが遅くなる可能性があるため、
-            # 日本語はおよそ 1 token ≈ 1~1.5 chars と仮定し、安全マージンを取って分割
-            # ここでは単純に改行区切りで結合していく手法を取る
-            
             source_str = f" (出典: {title})"
             current_chunk = ""
             
@@ -190,7 +237,7 @@ class RAGEngine:
 
         # スコアブースト (えこひいき)
         BOOST_URL_KEYWORD = ("faculty", "examination/all.html", "access")
-        BOOST_FACTOR = 1.3
+        BOOST_FACTOR = 1.2
         
         for i, meta in enumerate(self.metadatas):
             if any(keyword in meta['url'] for keyword in BOOST_URL_KEYWORD):
