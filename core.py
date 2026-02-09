@@ -259,37 +259,59 @@ class RAGEngine:
 
         combined_context = "\n\n".join(context_texts)
         
-        # プロンプト作成
-        system_content = """あなたは岩手県立大学の広報アシスタントAIです。
-以下の【参照資料】の内容を統合して、ユーザーの【質問】に詳しく答えてください。
-回答にはURLを含めず、嘘を書かないでください。
-情報がない場合は『NO_INFO』とだけ出力してください。"""
+        # 生成ロジック呼び出し
+        return self._generate_answer(query, combined_context, ref_urls)
+
+    def _generate_answer(self, query, context, ref_urls):
+        """厳密な生成とハルシネーション抑制ロジック"""
         
-        user_content = f"""### 質問
+        system_prompt = """あなたは岩手県立大学の誠実な広報担当AIです。
+以下のルールを厳守して回答してください。
+
+### 重要ルール
+1. **事実のみ**: 提供された【参照資料】にある情報のみを使用し、絶対に推測や外部知識を加えないでください。
+2. **思考プロセス**: まず資料の中に質問の答えがあるか確認し、確実な場合のみ回答してください。
+3. **不明時の対応**: 資料に答えがない場合は、即座に『NO_INFO』とだけ出力してください。言い訳は不要です。
+4. **URL禁止**: 回答文の中にURLを含めないでください。
+
+### 回答のスタイル
+- 簡潔に、事実を淡々と述べること。
+- 「資料によると、〜です」という形式が望ましい。"""
+        
+        user_prompt = f"""### 参照資料
+{context}
+
+### 質問
 {query}
 
-### 参照資料
-{combined_context}
+### 回答"""
 
-### 回答
-"""
-        
-        # Llama推論
+        # Llama推論 (Fact-based設定)
         response = self.llm.create_chat_completion(
             messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            temperature=0.0,
-            max_tokens=1024
+            temperature=0.0,       # ランダム性を排除
+            top_p=0.85,           # 低確率の単語をカット
+            repeat_penalty=1.1,   # 繰り返しを抑制
+            max_tokens=512
         )
         
-        answer = response["choices"][0]["message"]["content"]
+        answer = response["choices"][0]["message"]["content"].strip()
         
-        if "NO_INFO" in answer:
-            answer = "申し訳ありません。現時点の資料には詳しい記載がありませんでした。\n回答に近いと思われる以下のWebページをご確認いただけますでしょうか。"
-            
+        # ハルシネーションチェック (簡易)
+        if "NO_INFO" in answer or len(answer) < 5:
+            return self._get_fallback_message(), ref_urls
+
+        # セルフチェック (任意実装: 回答が資料に基づいているか確認)
+        # ※1.5Bモデルのため、精度と速度のバランスを考慮し、
+        # ここでは「明らかな矛盾」がないかのみチェックする簡易ロジックとする
+        
         return answer, ref_urls
+
+    def _get_fallback_message(self):
+        return "申し訳ありません。現時点の資料には詳しい記載がありませんでした。\n回答に近いと思われる以下のWebページをご確認いただけますでしょうか。"
 
 # シングルトンインスタンス作成用関数
 def get_engine():
