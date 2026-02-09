@@ -1,3 +1,4 @@
+
 import streamlit as st
 import core
 import json
@@ -51,10 +52,20 @@ def delete_session(session_id):
     if session_id in st.session_state.all_history:
         del st.session_state.all_history[session_id]
         save_all_history(st.session_state.all_history)
-        # カレントセッションだった場合は新規作成
+        
+        # カレントセッションだった場合
         if st.session_state.current_session_id == session_id:
-            create_new_session()
-            st.rerun()
+            # 他に履歴があれば最新に切り替え、なければ新規作成
+            if st.session_state.all_history:
+                latest_id = sorted(
+                    st.session_state.all_history.items(),
+                    key=lambda x: x[1].get("created_at", 0),
+                    reverse=True
+                )[0][0]
+                st.session_state.current_session_id = latest_id
+            else:
+                create_new_session()
+        st.rerun()
 
 # ==========================================
 # UI設定
@@ -107,16 +118,39 @@ with st.sidebar:
     )
 
     for s_id, data in sorted_history:
-        # ボタンのラベル (タイトルまたは日時)
         label = data.get("title", "新しいチャット")
         
-        # 選択状態の強調
-        if s_id == st.session_state.current_session_id:
-            st.markdown(f"**👉 {label}**")
-        else:
-            if st.button(label, key=s_id, use_container_width=True):
-                st.session_state.current_session_id = s_id
-                st.rerun()
+        # UIレイアウト: ボタンと設定メニュー
+        col1, col2 = st.columns([0.85, 0.15])
+        
+        # チャット選択ボタン
+        with col1:
+            if s_id == st.session_state.current_session_id:
+                # 選択中の強調表示
+                st.markdown(f"**👉 {label}**")
+            else:
+                if st.button(label, key=f"sel_{s_id}", use_container_width=True):
+                    st.session_state.current_session_id = s_id
+                    st.rerun()
+        
+        # 設定メニュー (ポップオーバー)
+        with col2:
+            with st.popover("⚙️", use_container_width=True):
+                st.markdown("##### 設定メニュー")
+                
+                # 【名前の変更】
+                new_title = st.text_input("タイトル変更", value=label, key=f"rename_{s_id}")
+                if st.button("保存", key=f"save_rename_{s_id}"):
+                    if new_title.strip():
+                        st.session_state.all_history[s_id]["title"] = new_title
+                        save_all_history(st.session_state.all_history)
+                        st.rerun()
+                
+                st.divider()
+                
+                # 【削除】
+                if st.button("🗑️ 削除", key=f"del_{s_id}", type="primary", use_container_width=True):
+                    delete_session(s_id)
 
 # ==========================================
 # メインコンテンツ: チャットエリア
@@ -126,7 +160,18 @@ current_session_data = st.session_state.all_history.get(current_id)
 
 # 万が一IDが見つからない場合のフォールバック
 if not current_session_data:
-    create_new_session()
+    # 履歴が空なら新規作成
+    if not st.session_state.all_history:
+        create_new_session()
+    else:
+        # IDが無効な場合、最新に戻す
+        latest_id = sorted(
+            st.session_state.all_history.items(),
+            key=lambda x: x[1].get("created_at", 0),
+            reverse=True
+        )[0][0]
+        st.session_state.current_session_id = latest_id
+    
     current_id = st.session_state.current_session_id
     current_session_data = st.session_state.all_history[current_id]
 
@@ -156,6 +201,7 @@ if prompt := st.chat_input("質問を入力してください..."):
         # タイトルを更新 (30文字制限)
         new_title = prompt[:20] + "..." if len(prompt) > 20 else prompt
         st.session_state.all_history[current_id]["title"] = new_title
+        save_all_history(st.session_state.all_history) # 即時保存
 
     # 履歴保存 (即時反映)
     save_all_history(st.session_state.all_history)
