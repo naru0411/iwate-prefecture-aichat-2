@@ -17,7 +17,11 @@ def load_all_history():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # 辞書型でない場合（古いリスト形式など）は空の辞書を返す
+                if not isinstance(data, dict):
+                    return {}
+                return data
         except Exception:
             return {}
     return {}
