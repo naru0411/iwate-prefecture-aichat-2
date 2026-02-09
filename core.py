@@ -5,7 +5,7 @@ import requests
 import numpy as np
 import urllib3
 import pickle
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from urllib.parse import urljoin
 from markdownify import markdownify as md
 from typing import List, Dict, Tuple
@@ -29,6 +29,7 @@ STORAGE_DIR = "storage"
 DOCS_FILE = os.path.join(STORAGE_DIR, "documents.pkl")
 META_FILE = os.path.join(STORAGE_DIR, "metadatas.pkl")
 EMBED_FILE = os.path.join(STORAGE_DIR, "embeddings.npy")
+PARENTS_FILE = os.path.join(STORAGE_DIR, "parents.pkl")
 
 # ==========================================
 # 2. クラス定義: RAG エンジン
@@ -41,6 +42,7 @@ class RAGEngine:
         self.documents = []
         self.document_embeddings = None
         self.metadatas = []
+        self.parent_documents = []
         
     def _load_llm(self):
         """Llamaモデルをロード"""
@@ -56,7 +58,7 @@ class RAGEngine:
         # n_gpu_layers=-1 で可能な限りGPU使用, n_ctx=2048
         return Llama(
             model_path=model_path,
-            n_ctx=2048,
+            n_ctx=4096,
             n_gpu_layers=-1,
             verbose=False
         )
@@ -76,6 +78,8 @@ class RAGEngine:
                 pickle.dump(self.documents, f)
             with open(META_FILE, 'wb') as f:
                 pickle.dump(self.metadatas, f)
+            with open(PARENTS_FILE, 'wb') as f:
+                pickle.dump(self.parent_documents, f)
             np.save(EMBED_FILE, self.document_embeddings)
             print("データをlocal storageに保存しました。")
         except Exception as e:
@@ -83,13 +87,15 @@ class RAGEngine:
 
     def _load_data(self):
         """ストレージからデータを読み込み"""
-        if os.path.exists(DOCS_FILE) and os.path.exists(META_FILE) and os.path.exists(EMBED_FILE):
+        if os.path.exists(DOCS_FILE) and os.path.exists(META_FILE) and os.path.exists(EMBED_FILE) and os.path.exists(PARENTS_FILE):
             print("保存済みデータが見つかりました。読み込んでいます...")
             try:
                 with open(DOCS_FILE, 'rb') as f:
                     self.documents = pickle.load(f)
                 with open(META_FILE, 'rb') as f:
                     self.metadatas = pickle.load(f)
+                with open(PARENTS_FILE, 'rb') as f:
+                    self.parent_documents = pickle.load(f)
                 self.document_embeddings = np.load(EMBED_FILE)
                 print("データの読み込み完了。スクレイピングをスキップします。")
                 return True
@@ -160,6 +166,20 @@ class RAGEngine:
 
                     main_content = soup.find(id="contents") or soup.find("main") or soup.body
                     if main_content:
+                        # Table処理: 構造を維持してテキスト化
+                        for table in main_content.find_all("table"):
+                            rows_text = []
+                            for tr in table.find_all("tr"):
+                                cells = [c.get_text(strip=True) for c in tr.find_all(["th", "td"])]
+                                if not cells: continue
+                                # 列数に応じてフォーマット変更
+                                if len(cells) == 2:
+                                    rows_text.append(f"{cells[0]}: {cells[1]}")
+                                else:
+                                    rows_text.append(" | ".join(cells))
+                            if rows_text:
+                                table.replace_with("\n" + "\n".join(rows_text) + "\n")
+
                         raw_text = md(str(main_content), strip=['a', 'img', 'script', 'style', 'iframe'])
 
                         # 行単位クリーニング
@@ -174,6 +194,9 @@ class RAGEngine:
 
                         content_text = "\n".join(cleaned_lines)
                         content_text = re.sub(r'\n{3,}', '\n\n', content_text)
+                        
+                        # 親子整合性のため、ここで「。」を改行コード付きに変換しておく
+                        content_text = content_text.replace("。", "。\n")
 
                         if len(content_text) > 50:
                             results.append({"title": title, "url": target["url"], "content": content_text})
@@ -191,33 +214,70 @@ class RAGEngine:
         print("データをチャンク化中...")
         self.documents = []
         self.metadatas = []
+        self.parent_documents = []
 
         for item in raw_data:
             title = item["title"]
             url = item["url"]
-            content = item["content"]
+            content = item["content"] # 既に "。\n" が適用済み
             
-            # 簡易的なチャンク分割 (文字数ベースで近似)
+            # 親ドキュメントとして保存
+            self.parent_documents.append(content)
+            parent_id = len(self.parent_documents) - 1
+            
             source_str = f" (出典: {title})"
             current_chunk = ""
+            current_start_idx = 0
+            # 現在のチャンクの開始位置を追跡するためのオフセット
+            cursor = 0 
             
-            # 文単位で分割
-            sentences = content.replace("。", "。\n").split("\n")
+            # 文単位で分割 (改行コードで分割すればよい)
+            sentences = content.split("\n")
             
             for sentence in sentences:
-                if not sentence.strip(): continue
-                # およそのトークン数見積もり (文字数)
+                # splitで消えた改行を長さ計算に含める必要があるが、
+                # contentには \n が入っている。splitすると \n は消える。
+                # よって len(sentence) + 1 (for \n) が元の長さ。
+                # ただし最後の行など注意。
+                
+                # 正確な位置特定のため、findを使う方が安全か、
+                # あるいは単純に積み上げるか。
+                # ここでは積み上げ方式で行く (Approximation)
+                sent_len = len(sentence) + 1 # +1 for newline
+                
+                if not sentence.strip(): 
+                    cursor += sent_len
+                    continue
+
                 if len(current_chunk) + len(sentence) > chunk_size:
                     if current_chunk:
                         self.documents.append(current_chunk + source_str)
-                        self.metadatas.append({"title": title, "url": url})
+                        self.metadatas.append({
+                            "title": title, 
+                            "url": url,
+                            "parent_id": parent_id,
+                            "start_index": current_start_idx,
+                            "end_index": cursor
+                        })
                     current_chunk = sentence
+                    current_start_idx = cursor # 次のチャンクの開始位置
                 else:
-                    current_chunk += sentence
+                    if current_chunk:
+                        current_chunk += "\n" + sentence
+                    else:
+                        current_chunk = sentence
+                
+                cursor += sent_len
             
             if current_chunk:
                 self.documents.append(current_chunk + source_str)
-                self.metadatas.append({"title": title, "url": url})
+                self.metadatas.append({
+                    "title": title, 
+                    "url": url,
+                    "parent_id": parent_id,
+                    "start_index": current_start_idx,
+                    "end_index": cursor
+                })
 
         print(f"ベクトル化を実行中 ({len(self.documents)} チャンク)...")
         # prefix "passage: " は e5-small の推奨
@@ -229,13 +289,13 @@ class RAGEngine:
         if not self.documents:
             return "データがロードされていません。", []
 
-        # クエリベクトル化 (prefix "query: " は e5-small の推奨)
+        # クエリベクトル化
         query_vec = self.embed_model.encode(["query: " + query], normalize_embeddings=True)[0]
         
         # 類似度計算
         scores = cosine_similarity([query_vec], self.document_embeddings)[0]
 
-        # スコアブースト (えこひいき)
+        # スコアブースト
         BOOST_URL_KEYWORD = ("faculty", "examination/all.html", "access")
         BOOST_FACTOR = 1.2
         
@@ -250,9 +310,22 @@ class RAGEngine:
         seen_urls = set()
 
         for idx in top_indices:
-            text = self.documents[idx]
             meta = self.metadatas[idx]
-            context_texts.append(f"【資料】(出典:{meta['title']})\n{text}")
+            
+            # Parent-Document Retrieval (Window)
+            parent_id = meta.get("parent_id")
+            if parent_id is not None and 0 <= parent_id < len(self.parent_documents):
+                parent_text = self.parent_documents[parent_id]
+                start_window = max(0, meta["start_index"] - 500)
+                end_window = min(len(parent_text), meta["end_index"] + 500)
+                
+                # Window抽出
+                window_text = parent_text[start_window:end_window]
+                context_texts.append(f"【資料】(出典:{meta['title']})\n...{window_text}...")
+            else:
+                # Fallback: keep existing behavior if parent not found (should not happen)
+                context_texts.append(f"【資料】(出典:{meta['title']})\n{self.documents[idx]}")
+
             if meta['url'] not in seen_urls:
                 ref_urls.append(meta['url'])
                 seen_urls.add(meta['url'])
@@ -270,9 +343,10 @@ class RAGEngine:
 
 ### 重要ルール
 1. **事実のみ**: 提供された【参照資料】にある情報のみを使用し、絶対に推測や外部知識を加えないでください。
-2. **思考プロセス**: まず資料の中に質問の答えがあるか確認し、確実な場合のみ回答してください。
-3. **不明時の対応**: 資料に答えがない場合は、即座に『NO_INFO』とだけ出力してください。言い訳は不要です。
-4. **URL禁止**: 回答文の中にURLを含めないでください。
+2. **主語の特定**: 資料には複数の学部・研究科の情報が混在している可能性があります。回答する際は必ず「どの学部・学科の情報か」を主語として明記し、情報を混同しないよう細心の注意を払ってください。
+3. **構造化データの活用**: 入試日程やカリキュラムなどの表形式データについては、項目の対応関係を崩さずに正確に答えてください。
+4. **不明時の対応**: 資料に答えがない場合は、即座に『NO_INFO』とだけ出力してください。
+5. **URL禁止**: 回答文の中にURLを含めないでください。
 
 ### 回答のスタイル
 - 簡潔に、事実を淡々と述べること。
