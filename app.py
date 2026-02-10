@@ -220,17 +220,14 @@ if prompt := st.chat_input("質問を入力してください..."):
 
     # AI回答生成
     with st.chat_message("assistant"):
-        # 検索処理中はスピナーを表示
-        with st.spinner("回答を検索・生成中..."):
-            stream_gen, refs = st.session_state.engine.search(prompt)
+        with st.spinner("回答を生成中..."):
+            response_text, refs = st.session_state.engine.search(prompt)
             
-        # ストリーミング表示 (st.write_streamはGeneratorを受け取り、完了後の全文を返す)
-        response_text = st.write_stream(stream_gen)
-        
-        if refs:
-            st.markdown("**【参照リンク】**")
-            for url in refs:
-                st.markdown(f"- {url}")
+            st.markdown(response_text)
+            if refs:
+                st.markdown("**【参照リンク】**")
+                for url in refs:
+                    st.markdown(f"- {url}")
             
     # メッセージ追加
     messages.append({"role": "assistant", "content": response_text, "refs": refs})
