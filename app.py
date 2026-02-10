@@ -117,26 +117,38 @@ with st.sidebar:
         reverse=True
     )
 
+    # スタイル調整: サイドバーのボタン間の余白を詰め、配置を整える
+    st.markdown("""
+        <style>
+        div[data-testid="stSidebarUserContent"] .stButton button {
+            margin-bottom: -10px;
+        }
+        div[data-testid="stSidebarUserContent"] .stPopover button {
+            padding-top: 0;
+            padding-bottom: 0;
+            height: 38px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     for s_id, data in sorted_history:
         label = data.get("title", "新しいチャット")
         
-        # UIレイアウト: ボタンと設定メニュー
-        col1, col2 = st.columns([0.85, 0.15])
+        # UIレイアウト: ボタンと設定メニューを中央揃えで配置
+        col1, col2 = st.columns([0.8, 0.2], vertical_alignment="center")
         
         # チャット選択ボタン
         with col1:
-            if s_id == st.session_state.current_session_id:
-                # 選択中の強調表示
-                st.markdown(f"**👉 {label}**")
-            else:
-                if st.button(label, key=f"sel_{s_id}", use_container_width=True):
+            display_label = f"👉 {label}" if s_id == st.session_state.current_session_id else label
+            if st.button(display_label, key=f"sel_{s_id}", use_container_width=True):
+                if s_id != st.session_state.current_session_id:
                     st.session_state.current_session_id = s_id
                     st.rerun()
         
         # 設定メニュー (ポップオーバー)
         with col2:
-            with st.popover("⚙️", use_container_width=True):
-                st.markdown("##### 設定メニュー")
+            with st.popover("⋮", use_container_width=True):
+                st.markdown("##### 設定")
                 
                 # 【名前の変更】
                 new_title = st.text_input("タイトル変更", value=label, key=f"rename_{s_id}")

@@ -297,7 +297,7 @@ class RAGEngine:
 
         # スコアブースト
         BOOST_URL_KEYWORD = ("faculty", "examination/all.html", "access")
-        BOOST_FACTOR = 1.2
+        BOOST_FACTOR = 1.0
         
         for i, meta in enumerate(self.metadatas):
             if any(keyword in meta['url'] for keyword in BOOST_URL_KEYWORD):
