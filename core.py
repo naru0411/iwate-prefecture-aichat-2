@@ -361,29 +361,52 @@ class RAGEngine:
 
 ### 回答"""
 
-        # Llama推論 (Fact-based設定)
-        response = self.llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.0,       # ランダム性を排除
-            top_p=0.85,           # 低確率の単語をカット
-            repeat_penalty=1.1,   # 繰り返しを抑制
-            max_tokens=512
-        )
-        
-        answer = response["choices"][0]["message"]["content"].strip()
-        
-        # ハルシネーションチェック (簡易)
-        if "NO_INFO" in answer or len(answer) < 5:
-            return self._get_fallback_message(), ref_urls
+        # ストリーミング生成用の内部関数
+        def stream_response():
+            response = self.llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,
+                top_p=0.85,
+                repeat_penalty=1.1,
+                max_tokens=512,
+                stream=True  # ストリーミング有効化
+            )
+            
+            buffer = ""
+            BUFFER_LIMIT = 50
+            fallback_triggered = False
 
-        # セルフチェック (任意実装: 回答が資料に基づいているか確認)
-        # ※1.5Bモデルのため、精度と速度のバランスを考慮し、
-        # ここでは「明らかな矛盾」がないかのみチェックする簡易ロジックとする
-        
-        return answer, ref_urls
+            for chunk in response:
+                delta = chunk["choices"][0]["delta"].get("content", "")
+                if not delta: continue
+
+                # バッファリングして NO_INFO チェック
+                if len(buffer) < BUFFER_LIMIT:
+                    buffer += delta
+                    if "NO_INFO" in buffer:
+                        fallback_triggered = True
+                        break
+                else:
+                    # バッファがあふれたら、溜まっていた分を吐き出す（初回のみ）
+                    if buffer:
+                        yield buffer
+                        buffer = ""
+                    yield delta
+            
+            if fallback_triggered:
+                yield self._get_fallback_message()
+            else:
+                # 残りのバッファを出力（短すぎる場合はハルシネーションの可能性ありとしてFallback）
+                if buffer:
+                    if len(buffer) < 5:
+                        yield self._get_fallback_message()
+                    else:
+                        yield buffer
+
+        return stream_response(), ref_urls
 
     def _get_fallback_message(self):
         return "申し訳ありません。現時点の資料には詳しい記載がありませんでした。\n回答に近いと思われる以下のWebページをご確認いただけますでしょうか。"
