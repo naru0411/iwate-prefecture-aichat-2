@@ -20,12 +20,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 # 1. モデル設定 & 定数
 # ==========================================
+# 1.5Bモデルへ差し戻し (Qwen2.5-1.5B)
 MODEL_REPO = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
 MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 
 # ストレージ設定
-STORAGE_DIR = "storage"
+# ストレージ設定 (Eドライブ絶対パスに変更)
+STORAGE_DIR = r"E:\Antigravity\iwate-prefecture-aichat-2\storage"
 DOCS_FILE = os.path.join(STORAGE_DIR, "documents.pkl")
 META_FILE = os.path.join(STORAGE_DIR, "metadatas.pkl")
 EMBED_FILE = os.path.join(STORAGE_DIR, "embeddings.npy")
@@ -46,16 +48,21 @@ class RAGEngine:
         
     def _load_llm(self):
         """Llamaモデルをロード"""
-        # ローカルディレクトリ ./models に保存
+        # 保存先変更: E:/LLM_Models/Qwen2.5-1.5B
+        local_model_dir = "E:/LLM_Models/Qwen2.5-1.5B"
+        if not os.path.exists(local_model_dir):
+            print(f"モデル保存ディレクトリを作成します: {local_model_dir}")
+            os.makedirs(local_model_dir)
+
         print(f"モデル {MODEL_REPO} をダウンロード/ロード中...")
         model_path = hf_hub_download(
             repo_id=MODEL_REPO,
             filename=MODEL_FILE,
-            local_dir="./models",
+            local_dir=local_model_dir,
             local_dir_use_symlinks=False
         )
         print(f"モデルロード: {model_path}")
-        # n_gpu_layers=-1 で可能な限りGPU使用, n_ctx=2048
+        # n_gpu_layers=-1 で可能な限りGPU使用, n_ctxを確保
         return Llama(
             model_path=model_path,
             n_ctx=4096,
@@ -70,8 +77,7 @@ class RAGEngine:
 
     def _save_data(self):
         """データをストレージに保存"""
-        if not os.path.exists(STORAGE_DIR):
-            os.makedirs(STORAGE_DIR)
+        os.makedirs(STORAGE_DIR, exist_ok=True)
         
         try:
             with open(DOCS_FILE, 'wb') as f:
@@ -209,7 +215,7 @@ class RAGEngine:
         self._process_documents(results)
         self._save_data() # Save after processing
 
-    def _process_documents(self, raw_data, chunk_size=500):
+    def _process_documents(self, raw_data, chunk_size=250):
         """データをチャンク化してベクトル化"""
         print("データをチャンク化中...")
         self.documents = []
@@ -337,18 +343,18 @@ class RAGEngine:
 
 
     def _generate_answer(self, query, context, ref_urls):
-        """厳密な生成とハルシネーション抑制ロジック (超厳格モード・3B対応版)"""
+        """厳密な生成とハルシネーション抑制ロジック (超厳格モード・1.5B最適化版)"""
         
         system_prompt = """あなたは岩手県立大学の厳格な検証官です。以下の【禁止事項】を犯した場合、回答は失敗とみなされます。
 
 【禁止事項】
-1. **日付の論理矛盾**: 「10月下旬（1月26日）」のように、同一文脈内で月が一致しない、または時系列が破綻している記述は即座に検知し、その回答を放棄して『NO_INFO』と出力せよ。3Bモデルの推論能力を最大限に活かし、矛盾を見逃すな。
+1. **日付の論理矛盾**: 「10月下旬（1月26日）」のように、同一文脈内で月が一致しない、または時系列が破綻している記述は即座に検知し、その回答を放棄して『NO_INFO』と出力せよ。
 2. **固有名詞の改変禁止**: 資料にある学部名、学科名、コース名、資格名などは、一言一句たりとも改変してはならない。「ソフトウェア」を「软件」とするような誤変換は論外である。
 3. **表データの捏造**: 行と列の対応関係が100%確実でない限り、表から情報を読み取るな。
 
 【鉄則】
 1. **情報の分離**: 資料内に『質問された学部以外の名前』が出てきた場合、その前後にある情報はすべて無視せよ。
-2. **自己検閲**: 回答を生成した後、一度立ち止まって「この日付に矛盾はないか？」「固有名詞は正しいか？」を自問自答せよ。少しでも疑わしければ『NO_INFO』とせよ。"""
+2. **自己検閲**: 回答を生成した後、一度立ち止まって「この日付に矛盾はないか？」「固有名詞は正しいか？」を自律的に確認せよ。少しでも疑わしければ『NO_INFO』とせよ。"""
         
         user_prompt = f"""### 参照資料
 {context}
